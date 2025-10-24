@@ -1,0 +1,30 @@
+.trade-page {
+  position: relative;
+  min-height: 100vh;
+  background: radial-gradient(
+      ellipse at top,
+      rgba(37, 99, 235, 0.12),
+      rgba(37, 99, 235, 0)
+    )
+    no-repeat,
+    linear-gradient(180deg, #020617 0%, #0f172a 40%, #020617 100%);
+  isolation: isolate;
+}
+
+.trade-page::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(
+    circle at 85% 20%,
+    rgba(168, 85, 247, 0.12),
+    rgba(168, 85, 247, 0) 55%
+  );
+}
+
+.trade-page > * {
+  position: relative;
+  z-index: 1;
+}

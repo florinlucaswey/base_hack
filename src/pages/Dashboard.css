@@ -1,0 +1,47 @@
+.dashboard-page {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.dashboard-page::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(
+    ellipse at top,
+    rgba(59, 130, 246, 0.25) 0%,
+    rgba(59, 130, 246, 0) 60%
+  );
+}
+
+.dashboard-page > * {
+  position: relative;
+  z-index: 1;
+}
+
+.dashboard-gate {
+  position: relative;
+  isolation: isolate;
+  background-color: #020617;
+}
+
+.dashboard-gate::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(
+    circle at top,
+    rgba(59, 130, 246, 0.16) 0%,
+    rgba(59, 130, 246, 0) 65%
+  );
+}
+
+.dashboard-gate > * {
+  position: relative;
+  z-index: 1;
+}

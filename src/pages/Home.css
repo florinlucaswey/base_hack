@@ -1,0 +1,34 @@
+.home-page {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.home-page::before,
+.home-page::after {
+  content: '';
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+}
+
+.home-page::before {
+  background: radial-gradient(circle at top, rgba(30, 64, 175, 0.28), transparent 55%);
+}
+
+.home-page::after {
+  inset: auto 0 0 0;
+  height: 30rem;
+  background: linear-gradient(
+    to top,
+    rgba(2, 6, 23, 1) 0%,
+    rgba(2, 6, 23, 0.8) 55%,
+    rgba(2, 6, 23, 0) 100%
+  );
+}
+
+.home-page > * {
+  position: relative;
+  z-index: 1;
+}
