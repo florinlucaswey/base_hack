@@ -6,6 +6,8 @@ import {
   ORACLE_UPDATE_INTERVAL_MS,
 } from '../utils/oracle'
 import './Trade.css'
+import { useHip3Pool } from '../hooks/useHip3Pool.jsx'
+import { Hip3LiquidityPanel } from '../components/Hip3LiquidityPanel.jsx'
 
 const QUICK_AMOUNTS = ['0.5', '1', '2', '5']
 const ORDER_TYPES = ['market', 'limit', 'stop']
@@ -61,17 +63,18 @@ const getAreaPath = (data, width = 320, height = 160, padding = 10) => {
   )} ${bottom.toFixed(2)} L${padding.toFixed(2)} ${bottom.toFixed(2)} Z`
 }
 
-const buildOrderbook = (price) => {
+const buildOrderbook = (price, depthScalar = 1) => {
   const basis = Number.isFinite(price) ? price : 0
-  const step = basis * 0.003
-  const baseSize = Math.max(basis / 12, 8)
+  const liquidityBoost = Number.isFinite(depthScalar) && depthScalar > 0 ? depthScalar : 1
+  const step = basis * 0.003 / Math.max(liquidityBoost, 0.5)
+  const baseSize = Math.max(basis / 12, 8) * liquidityBoost
   const levels = 4
 
   const bids = Array.from({ length: levels }, (_, index) => {
     const levelPrice = basis - step * (index + 1)
     return {
       price: formatPrice(levelPrice),
-      size: (baseSize - index * 1.4).toFixed(1),
+      size: Math.max(baseSize - index * 1.4, 0.1).toFixed(1),
     }
   })
 
@@ -79,7 +82,7 @@ const buildOrderbook = (price) => {
     const levelPrice = basis + step * (index + 1)
     return {
       price: formatPrice(levelPrice),
-      size: (baseSize - index * 1.2).toFixed(1),
+      size: Math.max(baseSize - index * 1.2, 0.1).toFixed(1),
     }
   })
 
@@ -95,6 +98,22 @@ const Trade = () => {
   const [sizeEth, setSizeEth] = useState('1')
   const [sizeUsd, setSizeUsd] = useState(ETH_TO_USD.toFixed(2))
   const [sizeError, setSizeError] = useState('')
+  const { pool, metrics: poolMetrics, stake, withdraw, estimateExecution } = useHip3Pool({
+    initialLiquidityEth: 1.4,
+    minLiquidityEth: 1,
+  })
+  const stakeIntoPool = useCallback(
+    (amount) => {
+      stake(amount, 'demo-liquidity-provider')
+    },
+    [stake]
+  )
+  const withdrawFromPool = useCallback(
+    (amount) => {
+      withdraw(amount, 'demo-liquidity-provider')
+    },
+    [withdraw]
+  )
 
   useEffect(() => {
     const selectedExists = assets.some((asset) => asset.id === selectedId)
@@ -115,8 +134,8 @@ const Trade = () => {
     [assets, selectedId]
   )
   const orderbook = useMemo(
-    () => buildOrderbook(selectedAsset?.price ?? 0),
-    [selectedAsset?.price]
+    () => buildOrderbook(selectedAsset?.price ?? 0, poolMetrics.depthScalar),
+    [selectedAsset?.price, poolMetrics.depthScalar]
   )
 
   const validateSizes = useCallback((ethValue, usdValue) => {
@@ -167,6 +186,12 @@ const Trade = () => {
 
   const notionalEth = parseFloat(sizeEth) || 0
   const notionalUsd = parseFloat(sizeUsd) || 0
+  const executionPreview = useMemo(() => {
+    if (sizeError || notionalEth <= 0) {
+      return null
+    }
+    return estimateExecution(notionalEth, side)
+  }, [estimateExecution, notionalEth, side, sizeError])
 
   useEffect(() => {
     validateSizes(sizeEth, sizeUsd)
@@ -297,6 +322,9 @@ const Trade = () => {
                     {formatChange(selectedAsset.change)}
                   </span>
                 </p>
+                <p className="mt-2 text-[0.7rem] uppercase tracking-[0.3em] text-slate-600">
+                  HIP-3 depth ×{poolMetrics.depthScalar.toFixed(2)} • Effective {poolMetrics.effectiveDepthEth.toFixed(2)} ETH
+                </p>
                 <div className="mt-4 grid grid-cols-2 gap-4 text-xs text-slate-300">
                   <div className="space-y-2">
                     <p className="text-slate-400">Bids</p>
@@ -332,147 +360,176 @@ const Trade = () => {
             </div>
           </div>
 
-          <aside className="space-y-6 rounded-xl border border-slate-900 bg-slate-900 p-6 lg:sticky lg:top-24 lg:self-start">
-            <div className="space-y-1">
-              <h2 className="text-sm font-semibold text-slate-200">New position</h2>
-              <p className="text-xs font-medium text-slate-300">
-                {selectedAsset?.name ?? 'Select a company'}
+          <aside className="space-y-6 lg:sticky lg:top-24 lg:self-start">
+            <section className="space-y-6 rounded-xl border border-slate-900 bg-slate-900 p-6">
+              <div className="space-y-1">
+                <h2 className="text-sm font-semibold text-slate-200">New position</h2>
+                <p className="text-xs font-medium text-slate-300">
+                  {selectedAsset?.name ?? 'Select a company'}
+                </p>
+              </div>
+              <div className="rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2 text-[0.7rem] uppercase tracking-[0.3em] text-slate-500">
+                Simulated execution only
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 text-sm">
+                {['buy', 'sell'].map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    onClick={() => setSide(option)}
+                    className={`rounded-lg px-4 py-2 capitalize transition ${
+                      side === option
+                        ? option === 'buy'
+                          ? 'bg-emerald-500 text-slate-950'
+                          : 'bg-red-500 text-white'
+                        : 'bg-slate-950 text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {option}
+                  </button>
+                ))}
+              </div>
+
+              <div className="grid grid-cols-3 gap-2 text-xs text-slate-400">
+                {ORDER_TYPES.map((type) => (
+                  <button
+                    key={type}
+                    type="button"
+                    onClick={() => setOrderType(type)}
+                    className={`rounded-lg border px-3 py-2 capitalize transition ${
+                      orderType === type
+                        ? 'border-slate-300 text-slate-100'
+                        : 'border-slate-800 hover:border-slate-700'
+                    }`}
+                  >
+                    {type}
+                  </button>
+                ))}
+              </div>
+
+              <div className="grid gap-3 text-xs">
+                <label className="space-y-2">
+                  <span className="uppercase tracking-[0.3em] text-slate-500">
+                    Size ({XI_SYMBOL})
+                  </span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.0001"
+                    value={sizeEth}
+                    onChange={(event) => handleEthChange(event.target.value)}
+                    className="w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 font-mono text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                  />
+                </label>
+                <label className="space-y-2">
+                  <span className="uppercase tracking-[0.3em] text-slate-500">Size ($)</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={sizeUsd}
+                    onChange={(event) => handleUsdChange(event.target.value)}
+                    className="w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 font-mono text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                  />
+                </label>
+              </div>
+              {sizeError ? (
+                <p className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                  {sizeError}
+                </p>
+              ) : null}
+
+              <div className="flex flex-wrap gap-2">
+                {QUICK_AMOUNTS.map((amount) => (
+                  <button
+                    key={amount}
+                    type="button"
+                    onClick={() => handleEthChange(amount)}
+                    className="rounded-lg border border-slate-800 px-3 py-1 text-xs text-slate-300 hover:border-slate-700"
+                  >
+                    {XI_SYMBOL} {amount}
+                  </button>
+                ))}
+              </div>
+
+              {orderType !== 'market' && (
+                <label className="space-y-2 text-xs">
+                  <span className="uppercase tracking-[0.3em] text-slate-500">Trigger price</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    placeholder="$ 0.00"
+                    className="w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 font-mono text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
+                  />
+                </label>
+              )}
+
+              <button
+                type="button"
+                disabled={Boolean(sizeError) || !sizeEth || !sizeUsd || (executionPreview && !executionPreview.permitted)}
+                className={`w-full rounded-lg py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
+                  side === 'buy'
+                    ? 'bg-emerald-500 text-slate-950 hover:bg-emerald-400'
+                    : 'bg-red-500 text-white hover:bg-red-400'
+                }`}
+              >
+                {side === 'buy' ? 'Submit buy order' : 'Submit sell order'}
+              </button>
+
+              <div className="rounded-lg border border-slate-900 bg-slate-950 p-4 text-xs text-slate-400">
+                <div className="flex justify-between">
+                  <span>HIP-3 liquidity</span>
+                  <span className={executionPreview?.permitted ? 'text-emerald-400' : 'text-amber-300'}>
+                    {executionPreview?.permitted ? 'Sufficient' : 'Unavailable'}
+                  </span>
+                </div>
+                <div className="mt-2 flex justify-between">
+                  <span>Slippage</span>
+                  <span>
+                    {executionPreview?.permitted ? `${executionPreview.impactBps.toFixed(1)} bps` : '---'}
+                  </span>
+                </div>
+                <div className="mt-2 flex justify-between">
+                  <span>Fees</span>
+                  <span>
+                    {executionPreview?.permitted
+                      ? `${XI_SYMBOL} ${executionPreview.feeEth.toFixed(4)}`
+                      : `${XI_SYMBOL} 0.0000`}
+                  </span>
+                </div>
+                <div className="mt-2 flex justify-between text-slate-200">
+                  <span>Total ETH</span>
+                  <span>
+                    {executionPreview?.permitted
+                      ? `${XI_SYMBOL} ${executionPreview.totalCostEth.toFixed(4)}`
+                      : `${XI_SYMBOL} ${notionalEth.toFixed(4)}`}
+                  </span>
+                </div>
+                <div className="mt-2 flex justify-between text-slate-500">
+                  <span>Notional</span>
+                  <span>
+                    {XI_SYMBOL} {notionalEth.toFixed(4)} {'\u2022'} ${notionalUsd.toFixed(2)}
+                  </span>
+                </div>
+                {!executionPreview?.permitted && executionPreview?.reason && (
+                  <p className="mt-3 text-[0.7rem] text-amber-200">{executionPreview.reason}</p>
+                )}
+              </div>
+
+              <p className="text-xs text-slate-500">
+                Orders settle off-chain in this demo. Connect your wallet to save activity.
               </p>
-            </div>
-            <div className="rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2 text-[0.7rem] uppercase tracking-[0.3em] text-slate-500">
-              Simulated execution only
-            </div>
+            </section>
 
-            <div className="grid grid-cols-2 gap-2 text-sm">
-              {['buy', 'sell'].map((option) => (
-                <button
-                  key={option}
-                  type="button"
-                  onClick={() => setSide(option)}
-                  className={`rounded-lg px-4 py-2 capitalize transition ${
-                    side === option
-                      ? option === 'buy'
-                        ? 'bg-emerald-500 text-slate-950'
-                        : 'bg-red-500 text-white'
-                      : 'bg-slate-950 text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  {option}
-                </button>
-              ))}
-            </div>
-
-            <div className="grid grid-cols-3 gap-2 text-xs text-slate-400">
-              {ORDER_TYPES.map((type) => (
-                <button
-                  key={type}
-                  type="button"
-                  onClick={() => setOrderType(type)}
-                  className={`rounded-lg border px-3 py-2 capitalize transition ${
-                    orderType === type
-                      ? 'border-slate-300 text-slate-100'
-                      : 'border-slate-800 hover:border-slate-700'
-                  }`}
-                >
-                  {type}
-                </button>
-              ))}
-            </div>
-
-            <div className="grid gap-3 text-xs">
-              <label className="space-y-2">
-                <span className="uppercase tracking-[0.3em] text-slate-500">
-                  Size ({XI_SYMBOL})
-                </span>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.0001"
-                  value={sizeEth}
-                  onChange={(event) => handleEthChange(event.target.value)}
-                  className="w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 font-mono text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
-                />
-              </label>
-              <label className="space-y-2">
-                <span className="uppercase tracking-[0.3em] text-slate-500">Size ($)</span>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={sizeUsd}
-                  onChange={(event) => handleUsdChange(event.target.value)}
-                  className="w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 font-mono text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
-                />
-              </label>
-            </div>
-            {sizeError ? (
-              <p className="rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-300">
-                {sizeError}
-              </p>
-            ) : null}
-
-            <div className="flex flex-wrap gap-2">
-              {QUICK_AMOUNTS.map((amount) => (
-                <button
-                  key={amount}
-                  type="button"
-                  onClick={() => handleEthChange(amount)}
-                  className="rounded-lg border border-slate-800 px-3 py-1 text-xs text-slate-300 hover:border-slate-700"
-                >
-                  {XI_SYMBOL} {amount}
-                </button>
-              ))}
-            </div>
-
-            {orderType !== 'market' && (
-              <label className="space-y-2 text-xs">
-                <span className="uppercase tracking-[0.3em] text-slate-500">Trigger price</span>
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  placeholder="$ 0.00"
-                  className="w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 font-mono text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500/40"
-                />
-              </label>
-            )}
-
-            <button
-              type="button"
-              disabled={Boolean(sizeError) || !sizeEth || !sizeUsd}
-              className={`w-full rounded-lg py-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-60 ${
-                side === 'buy'
-                  ? 'bg-emerald-500 text-slate-950 hover:bg-emerald-400'
-                  : 'bg-red-500 text-white hover:bg-red-400'
-              }`}
-            >
-              {side === 'buy' ? 'Submit buy order' : 'Submit sell order'}
-            </button>
-
-            <div className="rounded-lg border border-slate-900 bg-slate-950 p-4 text-xs text-slate-400">
-              <div className="flex justify-between">
-                <span>Estimated fill</span>
-                <span>
-                  {XI_SYMBOL} 0.0000
-                </span>
-              </div>
-              <div className="mt-2 flex justify-between">
-                <span>Fees</span>
-                <span>
-                  {XI_SYMBOL} 0.0000
-                </span>
-              </div>
-              <div className="mt-2 flex justify-between text-slate-200">
-                <span>Notional</span>
-                <span>
-                  {XI_SYMBOL} {notionalEth.toFixed(4)} {'\u2022'} ${notionalUsd.toFixed(2)}
-                </span>
-              </div>
-            </div>
-
-            <p className="text-xs text-slate-500">
-              Orders settle off-chain in this demo. Connect your wallet to save activity.
-            </p>
+            <Hip3LiquidityPanel
+              metrics={poolMetrics}
+              lastEvent={pool.lastEvent}
+              onStake={stakeIntoPool}
+              onWithdraw={withdrawFromPool}
+              estimateExecution={estimateExecution}
+            />
           </aside>
         </div>
       </div>

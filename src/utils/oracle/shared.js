@@ -1,11 +1,13 @@
 const SCRAPE_REQUEST_TIMEOUT_MS = 10_000
 
 export const resolveEnv = (key) => {
-  if (typeof process !== 'undefined' && process.env && process.env[key] !== undefined) {
-    return process.env[key]
+  const globalProcess = typeof globalThis !== 'undefined' ? globalThis.process : undefined
+  if (globalProcess && globalProcess.env && globalProcess.env[key] !== undefined) {
+    return globalProcess.env[key]
   }
-  if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env[key] !== undefined) {
-    return import.meta.env[key]
+  const importMetaEnv = typeof import.meta !== 'undefined' ? import.meta.env : undefined
+  if (importMetaEnv && importMetaEnv[key] !== undefined) {
+    return importMetaEnv[key]
   }
   return undefined
 }
@@ -40,7 +42,7 @@ export const safeJson = async (input, init, timeout) => {
   }
 }
 
-const magnitudeRegex = /(\d[\d,\.]*)\s?(billion|million|thousand|bn|mm|m|k|b|mn)/i
+const magnitudeRegex = /(\d[\d,.]*)\s?(billion|million|thousand|bn|mm|m|k|b|mn)/i
 
 export const extractMagnitudeFromText = (text) => {
   if (typeof text !== 'string') return undefined
