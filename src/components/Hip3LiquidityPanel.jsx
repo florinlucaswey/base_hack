@@ -116,6 +116,30 @@ export const Hip3LiquidityPanel = ({
               {(metrics.baseSpreadBps / 100).toFixed(2)}%
             </dd>
           </div>
+          <div>
+            <dt className="text-xs uppercase tracking-wide text-slate-500">Stress Spread</dt>
+            <dd className="text-lg font-semibold text-slate-100">
+              {((metrics.widenedSpreadBps ?? metrics.baseSpreadBps) / 100).toFixed(2)}%
+            </dd>
+          </div>
+          <div>
+            <dt className="text-xs uppercase tracking-wide text-slate-500">Max Utilization</dt>
+            <dd className="text-lg font-semibold text-slate-100">
+              {(((metrics.maxUtilization ?? 1) * 100)).toFixed(0)}%
+            </dd>
+          </div>
+          <div>
+            <dt className="text-xs uppercase tracking-wide text-slate-500">Taker Fee</dt>
+            <dd className="text-lg font-semibold text-slate-100">
+              {(metrics.feeBps / 100).toFixed(2)}%
+            </dd>
+          </div>
+          <div>
+            <dt className="text-xs uppercase tracking-wide text-slate-500">Treasury</dt>
+            <dd className="text-lg font-semibold text-slate-100">
+              {formatEth(metrics.treasuryEth ?? 0, 4)} ETH
+            </dd>
+          </div>
         </dl>
 
         <div className="rounded-lg border border-slate-900/80 bg-slate-950/80 p-4">

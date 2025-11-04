@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import {
   createHip3Pool,
+  creditTreasury,
   distributeFees,
   estimateHip3Execution,
   getPoolMetrics,
@@ -23,6 +24,10 @@ export const useHip3Pool = (config) => {
     setPool((prev) => distributeFees(prev, amountEth))
   }, [])
 
+  const allocateTreasury = useCallback((amountEth) => {
+    setPool((prev) => creditTreasury(prev, amountEth))
+  }, [])
+
   const metrics = useMemo(() => getPoolMetrics(pool), [pool])
 
   const estimateExecution = useCallback(
@@ -36,6 +41,7 @@ export const useHip3Pool = (config) => {
     stake,
     withdraw,
     addFees,
+    allocateTreasury,
     estimateExecution,
   }
 }

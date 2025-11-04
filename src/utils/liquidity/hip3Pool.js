@@ -1,10 +1,14 @@
 const HIP3_DEFAULTS = {
   minLiquidityEth: 1,
-  initialLiquidityEth: 1.2,
-  virtualInventoryMultiplier: 4.5,
+  initialLiquidityEth: 1.4,
+  virtualInventoryMultiplier: 5,
   targetUtilization: 0.65,
   feeBps: 12,
   maxImpactBps: 240,
+  baseSpreadBps: 8,
+  widenedSpreadBps: 15,
+  widenThreshold: 0.75,
+  maxUtilization: 0.9,
 }
 
 const toFiniteNumber = (value) => {
@@ -20,6 +24,7 @@ export const createHip3Pool = (config = {}) => {
   return {
     ethLiquidity: initialLiquidity,
     cumulativeFeesEth: 0,
+    treasuryEth: 0,
     stakers: [],
     lastEvent: null,
     config: merged,
@@ -94,15 +99,39 @@ export const distributeFees = (pool, feeEth) => {
   }
 }
 
+export const creditTreasury = (pool, amountEth) => {
+  const amount = toFiniteNumber(amountEth)
+  if (!(amount >= 0)) {
+    throw new Error('Treasury credit must be a valid number.')
+  }
+  if (amount === 0) {
+    return pool
+  }
+  return {
+    ...pool,
+    treasuryEth: pool.treasuryEth + amount,
+    lastEvent: { type: 'treasury', amountEth: amount, timestamp: Date.now() },
+  }
+}
+
 export const getPoolMetrics = (pool) => {
   const { ethLiquidity, config } = pool
-  const { minLiquidityEth, virtualInventoryMultiplier, targetUtilization, feeBps, maxImpactBps } = config
+  const {
+    minLiquidityEth,
+    virtualInventoryMultiplier,
+    targetUtilization,
+    feeBps,
+    maxImpactBps,
+    baseSpreadBps,
+    widenedSpreadBps,
+    widenThreshold,
+    maxUtilization,
+  } = config
   const supportsDex = ethLiquidity >= minLiquidityEth
   const safetyBufferEth = Math.max(ethLiquidity - minLiquidityEth, 0)
   const coverageRatio = minLiquidityEth === 0 ? Infinity : ethLiquidity / minLiquidityEth
   const effectiveDepthEth = ethLiquidity * virtualInventoryMultiplier
   const depthScalar = Math.max(0.25, Math.min(coverageRatio / targetUtilization, 4))
-  const baseSpreadBps = feeBps + (supportsDex ? Math.max(6, Math.round(24 / Math.max(coverageRatio, 1))) : 0)
 
   return {
     supportsDex,
@@ -111,9 +140,13 @@ export const getPoolMetrics = (pool) => {
     coverageRatio,
     effectiveDepthEth,
     depthScalar,
+    treasuryEth: pool.treasuryEth,
     feeBps,
     baseSpreadBps,
+    widenedSpreadBps,
+    widenThreshold,
     maxImpactBps,
+    maxUtilization,
     targetUtilization,
     virtualInventoryMultiplier,
   }
@@ -138,16 +171,28 @@ export const estimateHip3Execution = (pool, sizeEth, side = 'buy') => {
     }
   }
 
-  const effectiveDepth = Math.max(metrics.effectiveDepthEth, 1e-6)
-  const utilization = clamp(tradeSize / effectiveDepth, 0, 0.999)
+  const effectiveDepth = Math.max(metrics.effectiveDepthEth * (metrics.maxUtilization ?? 1), 1e-6)
+  const utilization = clamp(tradeSize / effectiveDepth, 0, 1)
   const impactBps = utilization * metrics.maxImpactBps
-  const slipFactor = side === 'buy' ? 1 + impactBps / 10_000 : 1 - impactBps / 10_000
+  let spreadBps = metrics.baseSpreadBps ?? 0
+  if (metrics.widenThreshold !== undefined && metrics.widenedSpreadBps !== undefined) {
+    if (utilization > metrics.widenThreshold) {
+      spreadBps = metrics.widenedSpreadBps
+    }
+  }
+  const slipBps = spreadBps + impactBps
+  const slipFactor =
+    side === 'buy'
+      ? 1 + slipBps / 10_000
+      : Math.max(0, 1 - slipBps / 10_000)
   const feeEth = (tradeSize * metrics.feeBps) / 10_000
 
   return {
     permitted: true,
     utilization,
     impactBps,
+    spreadBps,
+    slipBps,
     slipFactor,
     feeEth,
     totalCostEth: tradeSize * slipFactor + feeEth,

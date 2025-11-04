@@ -5,6 +5,11 @@ import { formatAddress } from '../utils/formatAddress'
 import { generateCompanyValuations, ORACLE_UPDATE_INTERVAL_MS } from '../utils/oracle'
 import './Dashboard.css'
 
+const formatPrice = (value) => {
+  if (!Number.isFinite(value)) return '$0.00'
+  return `$${value.toFixed(2)}`
+}
+
 const buildSeries = (seed = 1, points = 16) =>
   Array.from({ length: points }, (_, index) => {
     const base = Math.sin((index + seed) * 0.35) * 6 + 50
