@@ -1,3 +1,11 @@
+import { clamp } from './oracle/shared.js'
+import { fetchAnnualRevenue } from './oracle/metrics/annualRevenue.js'
+import { fetchMonthlyActiveUsers } from './oracle/metrics/monthlyActiveUsers.js'
+import { fetchSentimentScore } from './oracle/metrics/sentimentScore.js'
+import { fetchMarketPerformance } from './oracle/metrics/marketPerformance.js'
+import { fetchVerticalPerformance } from './oracle/metrics/verticalPerformance.js'
+import { fetchFearGreedIndex } from './oracle/metrics/fearGreedIndex.js'
+
 const STEP_INTERVAL_MS = 15 * 60 * 1000
 const HISTORY_LENGTH = 60
 const SCRAPE_CACHE_TTL = 12 * 60 * 60 * 1000
@@ -69,8 +77,6 @@ const DEFAULT_BASELINES = {
 
 const scrapedMetricsCache = new Map()
 
-const clamp = (value, min, max) => Math.min(Math.max(value, min), max)
-
 const normalize = (value, { min, max }) => {
   const clamped = clamp(value, min, max)
   const range = max - min
@@ -89,18 +95,6 @@ const round3 = (value) => roundTo(value, 3)
 
 const SCRAPE_REFRESH_WINDOW_MS = 60 * 60 * 1000
 const SCRAPE_FAILURE_BACKOFF_MS = 10 * 60 * 1000
-const SCRAPE_REQUEST_TIMEOUT_MS = 10_000
-const ALPHA_VANTAGE_CACHE_TTL = 15 * 60 * 1000
-
-const resolveEnv = (key) => {
-  if (typeof process !== 'undefined' && process.env && process.env[key] !== undefined) {
-    return process.env[key]
-  }
-  if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env[key] !== undefined) {
-    return import.meta.env[key]
-  }
-  return undefined
-}
 
 const COMPANY_SOURCES = {
   openai: {
@@ -131,336 +125,25 @@ const COMPANY_SOURCES = {
 
 const inFlightScrapes = new Map()
 const lastScrapeAttempts = new Map()
-const alphaVantageCache = new Map()
-
-const fetchWithTimeout = async (input, init = {}, timeout = SCRAPE_REQUEST_TIMEOUT_MS) => {
-  if (typeof fetch !== 'function') {
-    throw new Error('Global fetch is not available for scraping.')
-  }
-
-  const controller = new AbortController()
-  const id = setTimeout(() => controller.abort(), timeout)
-  try {
-    const response = await fetch(input, { ...init, signal: controller.signal })
-    if (!response.ok) {
-      throw new Error(`Request failed (${response.status}) for ${input}`)
-    }
-    return response
-  } finally {
-    clearTimeout(id)
-  }
-}
-
-const safeJson = async (input, init, timeout) => {
-  try {
-    const response = await fetchWithTimeout(input, init, timeout)
-    return await response.json()
-  } catch (error) {
-    console.error('[oracle] JSON fetch failed:', error)
-    return undefined
-  }
-}
-
-const magnitudeRegex = /(\d[\d,\.]*)\s?(billion|million|thousand|bn|mm|m|k|b|mn)/i
-
-const extractMagnitudeFromText = (text) => {
-  if (typeof text !== 'string') return undefined
-  const match = text.match(magnitudeRegex)
-  if (!match) return undefined
-  const rawValue = parseFloat(match[1].replace(/,/g, ''))
-  if (!Number.isFinite(rawValue)) return undefined
-  return {
-    value: rawValue,
-    unit: match[2]?.toLowerCase() ?? '',
-  }
-}
-
-const convertToBillions = (value, unit) => {
-  if (!Number.isFinite(value)) return undefined
-  const normalized = unit.startsWith('b')
-    ? 'b'
-    : unit.startsWith('m') || unit === 'mm' || unit === 'mn'
-    ? 'm'
-    : unit.startsWith('k') || unit === 'thousand'
-    ? 'k'
-    : unit
-  if (normalized === 'b') return value
-  if (normalized === 'm') return value / 1000
-  if (normalized === 'k') return value / 1_000_000
-  return undefined
-}
-
-const convertToMillions = (value, unit) => {
-  if (!Number.isFinite(value)) return undefined
-  const normalized = unit.startsWith('b')
-    ? 'b'
-    : unit.startsWith('m') || unit === 'mm' || unit === 'mn'
-    ? 'm'
-    : unit.startsWith('k') || unit === 'thousand'
-    ? 'k'
-    : unit
-  if (normalized === 'b') return value * 1000
-  if (normalized === 'm') return value
-  if (normalized === 'k') return value / 1000
-  return undefined
-}
-
-const parseRevenueValue = (raw) => {
-  if (raw == null) return undefined
-  if (typeof raw === 'number') {
-    if (!Number.isFinite(raw)) return undefined
-    if (raw > 10_000) return raw / 1_000_000_000
-    return raw
-  }
-  if (typeof raw === 'string') {
-    const trimmed = raw.trim()
-    if (!trimmed) return undefined
-    if (trimmed.includes('-')) {
-      const [low, high] = trimmed.split('-')
-      const lowValue = parseRevenueValue(low)
-      const highValue = parseRevenueValue(high)
-      if (typeof lowValue === 'number' && typeof highValue === 'number') {
-        return (lowValue + highValue) / 2
-      }
-    }
-    const magnitude = extractMagnitudeFromText(trimmed)
-    if (magnitude) {
-      return convertToBillions(magnitude.value, magnitude.unit)
-    }
-    const numeric = parseFloat(trimmed.replace(/,/g, ''))
-    if (Number.isFinite(numeric)) {
-      return numeric > 10_000 ? numeric / 1_000_000_000 : numeric
-    }
-    return undefined
-  }
-  if (typeof raw === 'object') {
-    if (raw.amount !== undefined) {
-      return parseRevenueValue(raw.amount)
-    }
-    if (raw.value !== undefined) {
-      return parseRevenueValue(raw.value)
-    }
-    if (raw.min !== undefined && raw.max !== undefined) {
-      const minValue = parseRevenueValue(raw.min)
-      const maxValue = parseRevenueValue(raw.max)
-      if (typeof minValue === 'number' && typeof maxValue === 'number') {
-        return (minValue + maxValue) / 2
-      }
-    }
-  }
-  return undefined
-}
-
-const crunchbaseKey =
-  resolveEnv('VITE_CRUNCHBASE_API_KEY') ?? resolveEnv('CRUNCHBASE_API_KEY') ?? resolveEnv('CRUNCHBASE_TOKEN')
-const pitchbookKey =
-  resolveEnv('VITE_PITCHBOOK_API_KEY') ?? resolveEnv('PITCHBOOK_API_KEY') ?? resolveEnv('PITCHBOOK_TOKEN')
-const newsApiKey = resolveEnv('VITE_NEWSAPI_KEY') ?? resolveEnv('NEWSAPI_KEY') ?? resolveEnv('NEWS_API_KEY')
-const alphaVantageKey =
-  resolveEnv('VITE_ALPHAVANTAGE_API_KEY') ?? resolveEnv('ALPHAVANTAGE_API_KEY') ?? resolveEnv('ALPHA_VANTAGE_KEY')
-
-const fetchCrunchbaseRevenue = async (config) => {
-  if (!crunchbaseKey || !config.crunchbaseId) return undefined
-  const url = new URL(
-    `https://api.crunchbase.com/api/v4/entities/organizations/${encodeURIComponent(config.crunchbaseId)}`
-  )
-  url.searchParams.set('user_key', crunchbaseKey)
-  url.searchParams.set('field_ids', 'financials,revenue_range,annual_revenue')
-  const json = await safeJson(url.toString())
-  const annualRevenue =
-    json?.data?.properties?.annual_revenue ?? json?.data?.properties?.revenue_range?.value ?? json?.data?.properties?.financials
-  const parsed = parseRevenueValue(annualRevenue)
-  return typeof parsed === 'number' ? parsed : undefined
-}
-
-const fetchPitchbookRevenue = async (config) => {
-  if (!pitchbookKey || !config.pitchbookId) return undefined
-  const url = `https://api.pitchbook.com/v1/companies/${encodeURIComponent(
-    config.pitchbookId
-  )}/financials?metric=Annual%20Revenue`
-  const json = await safeJson(url, {
-    headers: { Authorization: `Bearer ${pitchbookKey}` },
-  })
-  const financials = json?.financials ?? json?.data
-  if (!Array.isArray(financials)) return undefined
-  const latest = financials
-    .filter((entry) => entry && (entry.metric?.toLowerCase?.().includes('revenue') || entry.metric === 'Annual Revenue'))
-    .sort((a, b) => {
-      const dateA = Date.parse(a.asOfDate ?? a.period ?? a.date ?? 0)
-      const dateB = Date.parse(b.asOfDate ?? b.period ?? b.date ?? 0)
-      return dateB - dateA
-    })[0]
-  if (!latest) return undefined
-  const parsed = parseRevenueValue(latest.value ?? latest.amount ?? latest.reportedValue ?? latest.range)
-  return typeof parsed === 'number' ? parsed : undefined
-}
-
-const fetchAnnualRevenue = async (config) => {
-  const [crunchbaseRevenue, pitchbookRevenue] = await Promise.all([
-    fetchCrunchbaseRevenue(config),
-    fetchPitchbookRevenue(config),
-  ])
-  if (typeof crunchbaseRevenue === 'number' && typeof pitchbookRevenue === 'number') {
-    return (crunchbaseRevenue + pitchbookRevenue) / 2
-  }
-  return crunchbaseRevenue ?? pitchbookRevenue
-}
-
-const fetchNewsArticles = async (query, pageSize = 20) => {
-  if (!newsApiKey) return []
-  const url = new URL('https://newsapi.org/v2/everything')
-  url.searchParams.set('pageSize', String(pageSize))
-  url.searchParams.set('language', 'en')
-  url.searchParams.set('sortBy', 'publishedAt')
-  url.searchParams.set('q', query)
-  const from = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
-  url.searchParams.set('from', from)
-  const json = await safeJson(url.toString(), {
-    headers: { 'X-Api-Key': newsApiKey },
-  })
-  return Array.isArray(json?.articles) ? json.articles : []
-}
-
-const extractFirstMagnitudeMention = (articles, unitsConverter) => {
-  for (const article of articles) {
-    const text = `${article?.title ?? ''}. ${article?.description ?? ''}. ${article?.content ?? ''}`
-    const magnitude = extractMagnitudeFromText(text)
-    if (!magnitude) continue
-    const converted = unitsConverter(magnitude.value, magnitude.unit)
-    if (typeof converted === 'number' && Number.isFinite(converted)) {
-      return converted
-    }
-  }
-  return undefined
-}
-
-const fetchMonthlyActiveUsers = async (config) => {
-  const articles = await fetchNewsArticles(`${config.mauQuery} "monthly active users"`, 15)
-  const mau = extractFirstMagnitudeMention(articles, convertToMillions)
-  return typeof mau === 'number' ? mau : undefined
-}
-
-const POSITIVE_WORDS = new Set([
-  'growth',
-  'record',
-  'profit',
-  'strong',
-  'surge',
-  'breakthrough',
-  'success',
-  'approved',
-  'achievement',
-  'expands',
-  'milestone',
-  'optimistic',
-  'positive',
-  'gain',
-  'beat',
-])
-
-const NEGATIVE_WORDS = new Set([
-  'decline',
-  'loss',
-  'lawsuit',
-  'delay',
-  'ban',
-  'investigation',
-  'negative',
-  'controversy',
-  'critical',
-  'problem',
-  'challenge',
-  'downturn',
-  'drop',
-  'risk',
-  'regulatory',
-  'cautious',
-])
-
-const computeSentimentScore = (text) => {
-  if (!text) return 0
-  const tokens = text.toLowerCase().match(/[a-z']+/g)
-  if (!tokens || tokens.length === 0) return 0
-  let score = 0
-  for (const token of tokens) {
-    if (POSITIVE_WORDS.has(token)) score += 1
-    else if (NEGATIVE_WORDS.has(token)) score -= 1
-  }
-  const normalized = score / Math.max(tokens.length / 12, 1)
-  return clamp(normalized, -1, 1)
-}
-
-const fetchSentimentScore = async (config) => {
-  const articles = await fetchNewsArticles(config.sentimentQuery ?? config.mauQuery ?? '', 25)
-  if (!articles.length) return undefined
-  let total = 0
-  let weight = 0
-  for (const article of articles) {
-    const text = `${article?.title ?? ''}. ${article?.description ?? ''}. ${article?.content ?? ''}`
-    const score = computeSentimentScore(text)
-    if (score === 0) continue
-    const articleWeight = article?.source?.name?.toLowerCase().includes('press release') ? 0.75 : 1
-    total += score * articleWeight
-    weight += articleWeight
-  }
-  if (weight === 0) return 0
-  return clamp(total / weight, -1, 1)
-}
-
-const fetchAlphaVantageDelta = async (symbol) => {
-  if (!alphaVantageKey || !symbol) return undefined
-  const cached = alphaVantageCache.get(symbol)
-  if (cached && Date.now() - cached.timestamp < ALPHA_VANTAGE_CACHE_TTL) {
-    return cached.value
-  }
-  const url = new URL('https://www.alphavantage.co/query')
-  url.searchParams.set('function', 'TIME_SERIES_DAILY_ADJUSTED')
-  url.searchParams.set('symbol', symbol)
-  url.searchParams.set('outputsize', 'compact')
-  url.searchParams.set('apikey', alphaVantageKey)
-  const json = await safeJson(url.toString())
-  const series = json?.['Time Series (Daily)']
-  if (!series) return undefined
-  const dates = Object.keys(series).sort()
-  if (dates.length < 2) return undefined
-  const latest = series[dates[dates.length - 1]]
-  const prior = series[dates[dates.length - 2]]
-  if (!latest || !prior) return undefined
-  const latestClose = parseFloat(latest['4. close'])
-  const priorClose = parseFloat(prior['4. close'])
-  if (!Number.isFinite(latestClose) || !Number.isFinite(priorClose) || priorClose === 0) return undefined
-  const delta = (latestClose - priorClose) / priorClose
-  alphaVantageCache.set(symbol, { timestamp: Date.now(), value: delta })
-  return delta
-}
-
-const fetchMarketAndVerticalPerformance = async (config) => {
-  const [marketPerformance, verticalPerformance] = await Promise.all([
-    fetchAlphaVantageDelta(config.marketSymbol),
-    fetchAlphaVantageDelta(config.verticalSymbol),
-  ])
-  return {
-    marketPerformance,
-    verticalPerformance,
-  }
-}
-
-const fetchFearGreedIndex = async () => {
-  const json = await safeJson('https://api.alternative.me/fng/?limit=1&format=json')
-  const value = parseInt(json?.data?.[0]?.value, 10)
-  return Number.isFinite(value) ? value : undefined
-}
 
 const scrapeLiveMetrics = async (id) => {
   const config = COMPANY_SOURCES[id]
   if (!config) return
 
   try {
-    const [annualRevenue, monthlyActiveUsers, sentimentScore, marketResults, fearGreedIndex] = await Promise.all([
+    const [
+      annualRevenue,
+      monthlyActiveUsers,
+      sentimentScore,
+      marketPerformance,
+      verticalPerformance,
+      fearGreedIndex,
+    ] = await Promise.all([
       fetchAnnualRevenue(config),
       fetchMonthlyActiveUsers(config),
       fetchSentimentScore(config),
-      fetchMarketAndVerticalPerformance(config),
+      fetchMarketPerformance(config),
+      fetchVerticalPerformance(config),
       fetchFearGreedIndex(),
     ])
 
@@ -476,13 +159,11 @@ const scrapeLiveMetrics = async (id) => {
     if (typeof sentimentScore === 'number' && Number.isFinite(sentimentScore)) {
       internal.sentimentScore = clamp(round3(sentimentScore), -1, 1)
     }
-    if (marketResults) {
-      if (typeof marketResults.marketPerformance === 'number' && Number.isFinite(marketResults.marketPerformance)) {
-        external.marketPerformance = round3(marketResults.marketPerformance)
-      }
-      if (typeof marketResults.verticalPerformance === 'number' && Number.isFinite(marketResults.verticalPerformance)) {
-        external.verticalPerformance = round3(marketResults.verticalPerformance)
-      }
+    if (typeof marketPerformance === 'number' && Number.isFinite(marketPerformance)) {
+      external.marketPerformance = round3(marketPerformance)
+    }
+    if (typeof verticalPerformance === 'number' && Number.isFinite(verticalPerformance)) {
+      external.verticalPerformance = round3(verticalPerformance)
     }
     if (typeof fearGreedIndex === 'number' && Number.isFinite(fearGreedIndex)) {
       external.fearGreedIndex = Math.max(Math.min(fearGreedIndex, 100), 0)
